@@ -13,67 +13,75 @@ async function run() {
       "postgres://postgres:postgres@localhost:5432/postgres",
   });
   await client.connect();
-  const db = drizzle(client);
 
-  const [job] = await db
-    .select()
-    .from(jobs)
-    .where(inArray(jobs.state, ["PENDING", "RUNNING"]))
-    .limit(1);
+  try {
+    const db = drizzle(client);
 
-  if (!job) {
-    console.log("No job to run");
-    await client.end();
-    return;
-  }
+    const [job] = await db
+      .select()
+      .from(jobs)
+      .where(inArray(jobs.state, ["PENDING", "RUNNING"]))
+      .limit(1);
 
-  console.log("Running job:", job.id, job.name);
+    if (!job) {
+      console.log("No job to run");
+      return;
+    }
 
-  while (true) {
-    // ponytail: dependency check in JS, safe only because nothing else touches
-    // these rows yet. Move to the SQL NOT EXISTS predicate (DATA_MODEL §5) once
-    // Phase 4 claiming lets two workers race for the same job.
-    const jobSteps = await db.select().from(steps).where(eq(steps.jobId, job.id));
-    const succeeded = new Set(
-      jobSteps.filter((s) => s.state === "SUCCEEDED").map((s) => s.stepKey),
-    );
+    console.log("Running job:", job.id, job.name);
 
-    const step = jobSteps.find(
-      (s) =>
-        s.state === "PENDING" &&
-        (s.dependsOn as string[]).every((dep) => succeeded.has(dep)),
-    );
+    while (true) {
+      // ponytail: dependency check in JS, safe only because nothing else touches
+      // these rows yet. Move to the SQL NOT EXISTS predicate (DATA_MODEL §5) once
+      // Phase 4 claiming lets two workers race for the same job.
+      const jobSteps = await db.select().from(steps).where(eq(steps.jobId, job.id));
+      const succeeded = new Set(
+        jobSteps.filter((s) => s.state === "SUCCEEDED").map((s) => s.stepKey),
+      );
 
-    if (!step) break;
+      const step = jobSteps.find(
+        (s) =>
+          s.state === "PENDING" &&
+          (s.dependsOn as string[]).every((dep) => succeeded.has(dep)),
+      );
 
-    console.log("Running step:", step.stepKey);
-    const startedAt = new Date();
-    const result = await handlers[step.handler as keyof typeof handlers](step.input);
+      if (!step) break;
 
-    await db.transaction(async (tx) => {
-      await tx.insert(stepAttempts).values({
-        stepId: step.id,
-        attemptNo: step.attempts + 1,
-        workerId,
-        status: "SUCCEEDED",
-        startedAt,
-        finishedAt: new Date(),
+      const handler = handlers[step.handler as keyof typeof handlers];
+      if (!handler) throw new Error(`Unknown handler: ${step.handler}`);
+
+      console.log("Running step:", step.stepKey);
+      const startedAt = new Date();
+      const result = await handler(step.input);
+
+      await db.transaction(async (tx) => {
+        await tx.insert(stepAttempts).values({
+          stepId: step.id,
+          attemptNo: step.attempts + 1,
+          workerId,
+          status: "SUCCEEDED",
+          startedAt,
+          finishedAt: new Date(),
+        });
+
+        await tx
+          .update(steps)
+          .set({ state: "SUCCEEDED", result, attempts: step.attempts + 1 })
+          .where(eq(steps.id, step.id));
       });
 
-      await tx
-        .update(steps)
-        .set({ state: "SUCCEEDED", result, attempts: step.attempts + 1 })
-        .where(eq(steps.id, step.id));
-    });
+      console.log("Committed step:", step.stepKey);
+    }
+
+    await db
+      .update(jobs)
+      .set({ state: "COMPLETED", updatedAt: new Date() })
+      .where(eq(jobs.id, job.id));
+
+    console.log("Job completed:", job.id);
+  } finally {
+    await client.end();
   }
-
-  await db
-    .update(jobs)
-    .set({ state: "COMPLETED", updatedAt: new Date() })
-    .where(eq(jobs.id, job.id));
-
-  console.log("Job completed:", job.id);
-  await client.end();
 }
 
 run();
