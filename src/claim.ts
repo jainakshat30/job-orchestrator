@@ -26,6 +26,9 @@ export async function claimJob(
   return db.transaction(async (tx) => {
     const found = await tx.execute(sql`
       SELECT id, name FROM jobs
+      -- Whitelist on purpose. A dead-lettered job has its lease cleared, so
+      -- the lease predicate below waves it through; this list is the only
+      -- thing keeping it out. Never loosen to state <> something.
       WHERE state IN ('PENDING', 'RUNNING')
         AND (lease_expires_at IS NULL OR lease_expires_at < now())
       ORDER BY created_at
