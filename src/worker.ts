@@ -5,6 +5,7 @@ import { jobs, steps, stepAttempts } from "./db/schema";
 import { handlers } from "./handlers";
 import { claimJob, LEASE_SECONDS } from "./claim";
 import { timeout } from "./timeout";
+import { backoff } from "./backoff";
 
 const workerId = `worker-${process.pid}`;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -89,9 +90,7 @@ async function run() {
             // `<` is what makes maxAttempts=3 mean three executions.
             const attemptNo = step.attempts + 1;
             const retry = attemptNo < step.maxAttempts;
-            // ponytail: placeholder curve. Point 4 extracts backoff() and adds
-            // jitter so a thundering herd of retries doesn't land in lockstep.
-            const delay = 1000 * 2 ** (attemptNo - 1);
+            const delay = backoff(attemptNo);
 
             // Both writes or neither. Split them and you either retry forever
             // with a counter stuck at 0, or lose the history behind a count.
