@@ -175,7 +175,12 @@ async function run() {
 
             await tx
               .update(steps)
-              .set({ state: "SUCCEEDED", result, attempts: step.attempts + 1 })
+              .set({
+                state: "SUCCEEDED",
+                result,
+                attempts: step.attempts + 1,
+                nextRunAt: null,
+              })
               .where(eq(steps.id, step.id));
           });
 
