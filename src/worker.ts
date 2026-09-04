@@ -4,6 +4,7 @@ import { eq, sql } from "drizzle-orm";
 import { jobs, steps, stepAttempts } from "./db/schema";
 import { handlers } from "./handlers";
 import { claimJob, LEASE_SECONDS } from "./claim";
+import { timeout } from "./timeout";
 
 const workerId = `worker-${process.pid}`;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -67,7 +68,12 @@ async function run() {
 
           console.log("Running step:", step.stepKey);
           const startedAt = new Date();
-          const result = await handler(step.input);
+          // Only the race goes here. The persist below must stay outside any
+          // catch for this, or a DB failure reads as a step failure.
+          const result = await Promise.race([
+            handler(step.input),
+            timeout(step.timeoutMs),
+          ]);
 
           await db.transaction(async (tx) => {
             await tx.insert(stepAttempts).values({

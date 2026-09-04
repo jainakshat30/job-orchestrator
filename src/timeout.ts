@@ -15,7 +15,7 @@ export function timeout(ms: number): Promise<never> {
   // timer stays armed until it fires even when the handler wins the race.
   // Harmless at one step per worker; return the handle and clearTimeout it if
   // the pending timers ever pile up.
-  return new Promise((_, reject) =>
+  return new Promise<never>((_, reject) =>
     setTimeout(() => reject(new Error(`Step timed out after ${ms}ms`)), ms),
   );
 }
