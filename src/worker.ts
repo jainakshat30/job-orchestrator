@@ -48,12 +48,13 @@ async function run() {
 
       try {
         let stepFailed = false;
+        let jobSteps: (typeof steps.$inferSelect)[] = [];
 
         while (true) {
           // ponytail: dependency check in JS, safe only because this worker holds
           // the job's lease. Move to the SQL NOT EXISTS predicate (DATA_MODEL §5)
           // when steps within one job run in parallel.
-          const jobSteps = await db.select().from(steps).where(eq(steps.jobId, job.id));
+          jobSteps = await db.select().from(steps).where(eq(steps.jobId, job.id));
           const succeeded = new Set(
             jobSteps.filter((s) => s.state === "SUCCEEDED").map((s) => s.stepKey),
           );
@@ -163,7 +164,10 @@ async function run() {
           console.log("Committed step:", step.stepKey);
         }
 
-        if (!stepFailed) {
+        // The loop breaks when nothing is runnable, which is not the same thing
+        // as everything being done -- a step waiting out a backoff is pending and
+        // unrunnable at once. Check the invariant instead of inferring it.
+        if (!stepFailed && jobSteps.every((s) => s.state === "SUCCEEDED")) {
           await db
             .update(jobs)
             .set({
