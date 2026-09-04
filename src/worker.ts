@@ -139,6 +139,22 @@ async function run() {
                   nextRunAt: retry ? new Date(Date.now() + delay) : null,
                 })
                 .where(eq(steps.id, step.id));
+
+              if (!retry) {
+                // Same transaction as the attempt row and the step: a crash
+                // between them would leave a job RUNNING with nothing runnable
+                // in it. Lease cleared like on COMPLETED, which also disarms
+                // the renewal timer -- it only updates rows still locked_by us.
+                await tx
+                  .update(jobs)
+                  .set({
+                    state: "DEAD_LETTER",
+                    lockedBy: null,
+                    leaseExpiresAt: null,
+                    updatedAt: new Date(),
+                  })
+                  .where(eq(jobs.id, job.id));
+              }
             });
 
             if (retry) {
