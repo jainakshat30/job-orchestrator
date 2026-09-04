@@ -62,10 +62,28 @@ async function run() {
           const step = jobSteps.find(
             (s) =>
               s.state === "PENDING" &&
+              (s.nextRunAt === null || s.nextRunAt.getTime() <= Date.now()) &&
               (s.dependsOn as string[]).every((dep) => succeeded.has(dep)),
           );
 
-          if (!step) break;
+          if (!step) {
+            // PENDING and not runnable are different things now: next_run_at is
+            // the durable copy of a backoff, and unlike the sleep in the catch
+            // it survives the worker that set it. Wait it out instead of
+            // dropping the job -- the lease renewer is still armed, so the job
+            // stays ours while we do.
+            const waits = jobSteps
+              .filter((s) => s.state === "PENDING" && s.nextRunAt)
+              .map((s) => s.nextRunAt!.getTime() - Date.now())
+              .filter((ms) => ms > 0);
+
+            if (waits.length === 0) break;
+
+            const wait = Math.min(...waits);
+            console.log(`Nothing runnable yet, waiting ${wait}ms for a retry window`);
+            await sleep(wait);
+            continue;
+          }
 
           console.log("Running step:", step.stepKey);
           const startedAt = new Date();
