@@ -6,7 +6,7 @@
   "scripts": {
     "seed": "tsx src/seed.ts",
     "worker": "tsx src/worker.ts",
-    "test": "tsx src/backoff.test.ts && tsx src/claim.test.ts"
+    "test": "tsx src/backoff.test.ts && tsx src/idempotency.test.ts && tsx src/claim.test.ts"
   },
   "keywords": [],
   "author": "",
