@@ -46,6 +46,8 @@ async function run() {
       }, (LEASE_SECONDS / 3) * 1000);
 
       try {
+        let stepFailed = false;
+
         while (true) {
           // ponytail: dependency check in JS, safe only because this worker holds
           // the job's lease. Move to the SQL NOT EXISTS predicate (DATA_MODEL §5)
@@ -68,12 +70,24 @@ async function run() {
 
           console.log("Running step:", step.stepKey);
           const startedAt = new Date();
-          // Only the race goes here. The persist below must stay outside any
-          // catch for this, or a DB failure reads as a step failure.
-          const result = await Promise.race([
-            handler(step.input),
-            timeout(step.timeoutMs),
-          ]);
+          // Only the race is guarded. The persist below stays outside the
+          // catch, or a DB failure would read as a step failure.
+          let result: Awaited<ReturnType<typeof handler>>;
+          try {
+            result = await Promise.race([
+              handler(step.input),
+              timeout(step.timeoutMs),
+            ]);
+          } catch (err) {
+            // Detect only. 5.2 owns the reaction: attempts, backoff,
+            // DEAD_LETTER, and the FAILED step_attempts row. Leaving the step
+            // PENDING and breaking means the lease lapses and the job is
+            // reclaimed -- still a poison pill, but one that no longer takes
+            // the worker down with it.
+            console.error(`Step failed: ${step.stepKey}`, err);
+            stepFailed = true;
+            break;
+          }
 
           await db.transaction(async (tx) => {
             await tx.insert(stepAttempts).values({
@@ -94,17 +108,19 @@ async function run() {
           console.log("Committed step:", step.stepKey);
         }
 
-        await db
-          .update(jobs)
-          .set({
-            state: "COMPLETED",
-            lockedBy: null,
-            leaseExpiresAt: null,
-            updatedAt: new Date(),
-          })
-          .where(eq(jobs.id, job.id));
+        if (!stepFailed) {
+          await db
+            .update(jobs)
+            .set({
+              state: "COMPLETED",
+              lockedBy: null,
+              leaseExpiresAt: null,
+              updatedAt: new Date(),
+            })
+            .where(eq(jobs.id, job.id));
 
-        console.log("Job completed:", job.id);
+          console.log("Job completed:", job.id);
+        }
       } finally {
         clearInterval(renew);
       }
