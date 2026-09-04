@@ -14,6 +14,14 @@ const definition = {
       timeoutMs: 5000,
     },
     {
+      id: "charge_card",
+      handler: "chargeCard",
+      input: { amountCents: 4900 },
+      dependsOn: ["create_account"],
+      maxAttempts: 3,
+      timeoutMs: 5000,
+    },
+    {
       id: "send_welcome_email",
       handler: "sendEmail",
       input: { template: "welcome" },
