@@ -97,7 +97,9 @@ async function run() {
             if (!handler) throw new Error(`Unknown handler: ${step.handler}`);
 
             result = await Promise.race([
-              handler(step.input),
+              // step.id, not attemptNo: the key has to be identical across every
+              // attempt of this step, or retrying is what causes the double.
+              handler(step.input, { idempotencyKey: step.id }),
               timeout(step.timeoutMs),
             ]);
           } catch (err) {
