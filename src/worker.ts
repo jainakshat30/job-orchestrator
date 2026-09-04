@@ -65,15 +65,17 @@ async function run() {
 
           if (!step) break;
 
-          const handler = handlers[step.handler as keyof typeof handlers];
-          if (!handler) throw new Error(`Unknown handler: ${step.handler}`);
-
           console.log("Running step:", step.stepKey);
           const startedAt = new Date();
-          // Only the race is guarded. The persist below stays outside the
-          // catch, or a DB failure would read as a step failure.
-          let result: Awaited<ReturnType<typeof handler>>;
+          // Everything that can fail *because of the step* goes in here: an
+          // unknown handler, a handler that throws, a handler that runs long.
+          // The persist below stays outside, or a DB failure would read as a
+          // step failure and retry work that already succeeded.
+          let result: Awaited<ReturnType<(typeof handlers)[keyof typeof handlers]>>;
           try {
+            const handler = handlers[step.handler as keyof typeof handlers];
+            if (!handler) throw new Error(`Unknown handler: ${step.handler}`);
+
             result = await Promise.race([
               handler(step.input),
               timeout(step.timeoutMs),
