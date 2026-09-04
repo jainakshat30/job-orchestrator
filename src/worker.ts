@@ -81,12 +81,27 @@ async function run() {
               timeout(step.timeoutMs),
             ]);
           } catch (err) {
-            // Detect only. 5.2 owns the reaction: attempts, backoff,
-            // DEAD_LETTER, and the FAILED step_attempts row. Leaving the step
-            // PENDING and breaking means the lease lapses and the job is
-            // reclaimed -- still a poison pill, but one that no longer takes
-            // the worker down with it.
+            // Anything is throwable in JS, so narrow before reaching for .message.
+            const message = err instanceof Error ? err.message : String(err);
             console.error(`Step failed: ${step.stepKey}`, err);
+
+            // ponytail: a throw in here escapes the step loop and takes the
+            // worker with it -- a catch block does not catch itself. Left that
+            // way on purpose: if the DB is unreachable, exiting loudly beats
+            // dropping the history quietly.
+            await db.insert(stepAttempts).values({
+              stepId: step.id,
+              attemptNo: step.attempts + 1,
+              workerId,
+              status: "FAILED",
+              error: message,
+              startedAt,
+              finishedAt: new Date(),
+            });
+
+            // Retry and backoff arrive in point 3, DEAD_LETTER in 5.3. Until
+            // then the step stays PENDING and the lease lapses, so the job is
+            // reclaimed and replays -- a poison pill, but one leaving a trail.
             stepFailed = true;
             break;
           }
