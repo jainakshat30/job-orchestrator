@@ -128,13 +128,13 @@ async function run() {
                 finishedAt: new Date(),
               });
 
-              // state is already PENDING -- steps never get marked RUNNING here,
-              // the job's lease is what keeps a second worker off them. Set it
-              // anyway: free inside this UPDATE, and right if that ever changes.
+              // Back to PENDING to be picked up again, or terminally FAILED --
+              // the job is dead-lettered either way below, and the row is what
+              // says which step killed it.
               await tx
                 .update(steps)
                 .set({
-                  state: "PENDING",
+                  state: retry ? "PENDING" : "FAILED",
                   attempts: attemptNo,
                   nextRunAt: retry ? new Date(Date.now() + delay) : null,
                 })
