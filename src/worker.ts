@@ -85,23 +85,62 @@ async function run() {
             const message = err instanceof Error ? err.message : String(err);
             console.error(`Step failed: ${step.stepKey}`, err);
 
+            // max_attempts counts total tries, not retries after the first, so
+            // `<` is what makes maxAttempts=3 mean three executions.
+            const attemptNo = step.attempts + 1;
+            const retry = attemptNo < step.maxAttempts;
+            // ponytail: placeholder curve. Point 4 extracts backoff() and adds
+            // jitter so a thundering herd of retries doesn't land in lockstep.
+            const delay = 1000 * 2 ** (attemptNo - 1);
+
+            // Both writes or neither. Split them and you either retry forever
+            // with a counter stuck at 0, or lose the history behind a count.
             // ponytail: a throw in here escapes the step loop and takes the
             // worker with it -- a catch block does not catch itself. Left that
             // way on purpose: if the DB is unreachable, exiting loudly beats
             // dropping the history quietly.
-            await db.insert(stepAttempts).values({
-              stepId: step.id,
-              attemptNo: step.attempts + 1,
-              workerId,
-              status: "FAILED",
-              error: message,
-              startedAt,
-              finishedAt: new Date(),
+            await db.transaction(async (tx) => {
+              await tx.insert(stepAttempts).values({
+                stepId: step.id,
+                attemptNo,
+                workerId,
+                status: "FAILED",
+                error: message,
+                startedAt,
+                finishedAt: new Date(),
+              });
+
+              // state is already PENDING -- steps never get marked RUNNING here,
+              // the job's lease is what keeps a second worker off them. Set it
+              // anyway: free inside this UPDATE, and right if that ever changes.
+              await tx
+                .update(steps)
+                .set({
+                  state: "PENDING",
+                  attempts: attemptNo,
+                  nextRunAt: retry ? new Date(Date.now() + delay) : null,
+                })
+                .where(eq(steps.id, step.id));
             });
 
-            // Retry and backoff arrive in point 3, DEAD_LETTER in 5.3. Until
-            // then the step stays PENDING and the lease lapses, so the job is
-            // reclaimed and replays -- a poison pill, but one leaving a trail.
+            if (retry) {
+              console.log(
+                `Retrying ${step.stepKey} in ${delay}ms (attempt ${attemptNo}/${step.maxAttempts} failed)`,
+              );
+              // next_run_at is the durable copy of this wait; the sleep is just
+              // this worker staying on the job instead of dropping the lease.
+              // ponytail: parks the worker for the whole backoff. Release the
+              // lease and re-claim instead if worker utilisation starts to bite.
+              await sleep(delay);
+              continue;
+            }
+
+            // Attempts exhausted. 5.3 turns this into DEAD_LETTER; until then
+            // the lease just lapses and the job replays -- a poison pill, but
+            // one with a full attempt history behind it now.
+            console.error(
+              `Step exhausted ${step.maxAttempts} attempts: ${step.stepKey}`,
+            );
             stepFailed = true;
             break;
           }
