@@ -134,3 +134,23 @@ export const stepAttempts = pgTable(
     index("idx_attempts_step").on(table.stepId),
   ],
 );
+
+/**
+ * Stand-in for an external payment gateway's own storage. Lives in our database
+ * for convenience, but the point is that it sits on the far side of a boundary:
+ * the UNIQUE constraint below is what refuses a double charge, not anything the
+ * orchestrator remembers about its own retries.
+ */
+export const charges = pgTable("charges", {
+  id: uuid("id").primaryKey().defaultRandom(),
+
+  idempotencyKey: text("idempotency_key").notNull().unique(),
+
+  amountCents: integer("amount_cents").notNull(),
+
+  createdAt: timestamp("created_at", {
+    withTimezone: true,
+  })
+    .notNull()
+    .defaultNow(),
+});
